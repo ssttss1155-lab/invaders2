@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SPACE INVADERS</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100dvh;
+    font-family: 'Press Start 2P', monospace;
+    color: #0ff;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+  }
+
+  #stars {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  #ui {
+    position: relative;
+    z-index: 2;
+    width: 100%;
+    max-width: 420px;
+    padding: 8px 16px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: #0ff;
+  }
+
+  #gameWrapper {
+    position: relative;
+    z-index: 2;
+    border: 2px solid #0ff;
+    box-shadow: 0 0 20px #0ff4, inset 0 0 20px #0002;
+    background: #000a;
+  }
+
+  canvas { display: block; }
+
+  #controls {
+    position: relative;
+    z-index: 2;
+    width: 100%;
+    max-width: 420px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    gap: 12px;
+  }
+
+  .btn-group { display: flex; gap: 12px; }
+
+  .ctrl-btn {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    border: 2px solid #0ff8;
+    background: #0ff1;
+    color: #0ff;
+    font-size: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.1s, box-shadow 0.1s;
+    active-scale: 0.95;
+  }
+  .ctrl-btn:active { background: #0ff3; box-shadow: 0 0 12px #0ff8; }
+
+  .fire-btn {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    border: 3px solid #f0f8;
+    background: #f0f1;
+    color: #f0f;
+    font-size: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    box-shadow: 0 0 10px #f0f4;
+    transition: background 0.1s, box-shadow 0.1s;
+  }
+  .fire-btn:active { background: #f0f4; box-shadow: 0 0 20px #f0f; }
+
+  #overlay {
+    position: absolute;
+    inset: 0;
+    background: #000c;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    z-index: 10;
+  }
+  #overlay h1 {
+    font-size: clamp(14px, 5vw, 22px);
+    color: #0ff;
+    text-shadow: 0 0 20px #0ff;
+    animation: pulse 1.2s ease-in-out infinite alternate;
+    text-align: center;
+  }
+  #overlay p {
+    font-size: 9px;
+    color: #888;
+    text-align: center;
+    line-height: 1.8;
+  }
+  .start-btn {
+    padding: 12px 24px;
+    border: 2px solid #0ff;
+    background: transparent;
+    color: #0ff;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 11px;
+    cursor: pointer;
+    animation: blink 1s step-end infinite;
+    -webkit-tap-highlight-color: transparent;
+  }
+  @keyframes pulse { from { text-shadow: 0 0 10px #0ff4; } to { text-shadow: 0 0 30px #0ff; } }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+<script>
+// ===== Web Audio Sound Engine =====
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx = null;
+
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new AudioCtx();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playTone({ freq = 440, freq2, type = 'square', duration = 0.1, volume = 0.3, attack = 0.005, decay = 0.05, freqEnd, delay = 0 }) {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime + delay;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t);
+  if (freqEnd !== undefined) osc.frequency.exponentialRampToValueAtTime(Math.max(freqEnd, 1), t + duration);
+  if (freq2 !== undefined) osc.frequency.linearRampToValueAtTime(freq2, t + duration * 0.5);
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(volume, t + attack);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
+  osc.start(t);
+  osc.stop(t + duration + 0.01);
+}
+
+function playNoise({ duration = 0.1, volume = 0.2, freq = 800, q = 1, delay = 0 }) {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime + delay;
+  const bufSize = audioCtx.sampleRate * duration;
+  const buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = freq;
+  filter.Q.value = q;
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(volume, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(audioCtx.destination);
+  src.start(t);
+  src.stop(t + duration);
+}
+
+const SFX = {
+  shoot() {
+    ensureAudio();
+    playTone({ freq: 880, freqEnd: 220, type: 'square', duration: 0.12, volume: 0.25 });
+  },
+  invaderHit() {
+    ensureAudio();
+    playNoise({ duration: 0.18, volume: 0.5, freq: 600, q: 0.8 });
+    playTone({ freq: 200, freqEnd: 80, type: 'sawtooth', duration: 0.18, volume: 0.2 });
+  },
+  playerHit() {
+    ensureAudio();
+    playNoise({ duration: 0.4, volume: 0.8, freq: 200, q: 0.5 });
+    playTone({ freq: 120, freqEnd: 40, type: 'sawtooth', duration: 0.4, volume: 0.4 });
+  },
+  levelUp() {
+    ensureAudio();
+    [0, 0.12, 0.24, 0.38].forEach((d, i) => {
+      playTone({ freq: [523, 659, 784, 1047][i], type: 'square', duration: 0.15, volume: 0.25, delay: d });
+    });
+  },
+  gameOver() {
+    ensureAudio();
+    [0, 0.2, 0.4, 0.65].forEach((d, i) => {
+      playTone({ freq: [300, 250, 200, 120][i], freqEnd: [250, 200, 150, 60][i], type: 'sawtooth', duration: 0.25, volume: 0.3, delay: d });
+    });
+  },
+  bonusUFO() {
+    ensureAudio();
+    // Descending warble
+    [0, 0.1, 0.2, 0.3].forEach((d, i) => {
+      playTone({ freq: [800, 600, 800, 600][i], type: 'sawtooth', duration: 0.12, volume: 0.18, delay: d });
+    });
+  },
+  powerupGet() {
+    ensureAudio();
+    [0, 0.08, 0.16, 0.26].forEach((d, i) => {
+      playTone({ freq: [400, 600, 800, 1200][i], type: 'square', duration: 0.12, volume: 0.3, delay: d });
+    });
+  },
+  marchStep: 0,
+  march() {
+    ensureAudio();
+    const freqs = [160, 130, 100, 130];
+    playTone({ freq: freqs[SFX.marchStep % 4], type: 'square', duration: 0.06, volume: 0.15 });
+    SFX.marchStep++;
+  }
+};
+</script>
+</head>
+<body>
+
+<canvas id="stars"></canvas>
+
+<div id="ui">
+  <div>SCORE <span id="scoreVal">0</span></div>
+  <div>LEVEL <span id="levelVal">1</span></div>
+  <div>❤️ <span id="livesVal">3</span></div>
+</div>
+
+<div id="gameWrapper">
+  <canvas id="game"></canvas>
+  <div id="overlay">
+    <h1>SPACE<br>INVADERS</h1>
+    <p>矢印ボタンで移動<br>赤ボタンで発射</p>
+    <button class="start-btn" id="startBtn">PRESS START</button>
+  </div>
+</div>
+
+<div id="controls">
+  <div class="btn-group">
+    <button class="ctrl-btn" id="btnL">◀</button>
+    <button class="ctrl-btn" id="btnR">▶</button>
+  </div>
+  <button class="fire-btn" id="btnFire">🔥</button>
+</div>
+
+<script>
+// --- Stars background ---
+(function() {
+  const sc = document.getElementById('stars');
+  const sx = sc.getContext('2d');
+  sc.width = window.innerWidth;
+  sc.height = window.innerHeight;
+  const stars = Array.from({length: 120}, () => ({
+    x: Math.random() * sc.width,
+    y: Math.random() * sc.height,
+    r: Math.random() * 1.5 + 0.3,
+    a: Math.random(),
+    speed: Math.random() * 0.005 + 0.002
+  }));
+  function drawStars() {
+    sx.clearRect(0, 0, sc.width, sc.height);
+    stars.forEach(s => {
+      s.a += s.speed;
+      const alpha = (Math.sin(s.a) + 1) / 2 * 0.8 + 0.2;
+      sx.beginPath();
+      sx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+      sx.fillStyle = `rgba(200,230,255,${alpha})`;
+      sx.fill();
+    });
+    requestAnimationFrame(drawStars);
+  }
+  drawStars();
+})();
+
+// --- Game ---
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const scoreEl = document.getElementById('scoreVal');
+const levelEl = document.getElementById('levelVal');
+const livesEl = document.getElementById('livesVal');
+
+// Canvas size based on viewport
+const maxW = Math.min(window.innerWidth, 420);
+const maxH = Math.min(window.innerHeight - 160, 500);
+canvas.width = maxW;
+canvas.height = maxH;
+document.getElementById('gameWrapper').style.width = maxW + 'px';
+
+const W = canvas.width, H = canvas.height;
+
+// Game state
+let state = { score: 0, level: 1, lives: 3, running: false };
+let player, bullets, invaders, invBullets, particles, shields;
+let invDir = 1, invSpeed = 1, invDropY = 0, invShootTimer = 0;
+let animId;
+let keys = { left: false, right: false, fire: false };
+let fireCooldown = 0;
+
+// Bonus UFO
+let bonusUFO = null;
+let bonusUFOTimer = 0;
+const BONUS_UFO_INTERVAL = 15000; // ms
+
+// Powerup state
+let powerup = { type: null, timer: 0 };
+const POWERUP_DURATION = 7000;
+const POWERUPS = ['rapid', 'invincible', 'triple'];
+const POWERUP_LABELS = { rapid: '連射!', invincible: '無敵!', triple: '3Way!' };
+const POWERUP_COLORS = { rapid: '#ff0', invincible: '#0ff', triple: '#f0f' };
+
+// Colors
+const COL = { player: '#0ff', bullet: '#ff0', invBullet: '#f44', invaders: ['#f0f','#0f0','#f80'], shield: '#0a0' };
+
+function initGame() {
+  player = { x: W/2, y: H - 30, w: 28, h: 16, speed: 4 };
+  bullets = [];
+  invBullets = [];
+  particles = [];
+  invDir = 1;
+  invShootTimer = 0;
+  fireCooldown = 0;
+  bonusUFO = null;
+  bonusUFOTimer = 0;
+  powerup = { type: null, timer: 0 };
+  invSpeed = 0.5 + state.level * 0.3;
+
+  // Shields
+  const sw = 28, sh = 14, gap = W / 4;
+  shields = [];
+  for (let i = 0; i < 4; i++) {
+    const bx = gap * i + gap/2 - sw/2;
+    const by = H - 80;
+    shields.push({ x: bx, y: by, w: sw, h: sh, hp: 6 });
+  }
+
+  // Invaders grid
+  invaders = [];
+  const cols = 8, rows = 4;
+  const iw = 22, ih = 14, hgap = 12, vgap = 14;
+  const totalW = cols * (iw + hgap) - hgap;
+  const startX = (W - totalW) / 2;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      invaders.push({
+        x: startX + c * (iw + hgap),
+        y: 30 + r * (ih + vgap),
+        w: iw, h: ih,
+        row: r,
+        alive: true,
+        frame: 0
+      });
+    }
+  }
+}
+
+function spawnParticles(x, y, col, n=8) {
+  for (let i = 0; i < n; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = Math.random() * 3 + 1;
+    particles.push({ x, y, vx: Math.cos(angle)*speed, vy: Math.sin(angle)*speed, life: 1, col });
+  }
+}
+
+function drawPlayer() {
+  const p = player;
+  ctx.fillStyle = COL.player;
+  ctx.shadowColor = COL.player;
+  ctx.shadowBlur = 8;
+  // Body
+  ctx.fillRect(p.x - p.w/2 + 6, p.y - p.h/2 + 4, p.w - 12, p.h - 4);
+  // Wings
+  ctx.fillRect(p.x - p.w/2, p.y + p.h/2 - 6, p.w, 6);
+  // Gun
+  ctx.fillRect(p.x - 2, p.y - p.h/2, 4, 6);
+  ctx.shadowBlur = 0;
+}
+
+function drawInvader(inv) {
+  const cx = inv.x + inv.w/2, cy = inv.y + inv.h/2;
+  const col = COL.invaders[Math.floor(inv.row / 2)];
+  ctx.fillStyle = col;
+  ctx.shadowColor = col;
+  ctx.shadowBlur = 6;
+  if (inv.row < 1) {
+    // UFO type
+    ctx.fillRect(inv.x+4, inv.y, inv.w-8, inv.h/2);
+    ctx.fillRect(inv.x, inv.y+inv.h/2, inv.w, inv.h/2);
+    // antennas
+    ctx.fillRect(inv.x+2, inv.y-4, 3, 4);
+    ctx.fillRect(inv.x+inv.w-5, inv.y-4, 3, 4);
+    // feet alternate
+    if (inv.frame) {
+      ctx.fillRect(inv.x+2, inv.y+inv.h, 4, 4);
+      ctx.fillRect(inv.x+inv.w-6, inv.y+inv.h, 4, 4);
+    } else {
+      ctx.fillRect(inv.x, inv.y+inv.h, 4, 4);
+      ctx.fillRect(inv.x+inv.w-4, inv.y+inv.h, 4, 4);
+    }
+  } else {
+    // Crab type
+    ctx.fillRect(inv.x+4, inv.y+2, inv.w-8, inv.h-4);
+    ctx.fillRect(inv.x+2, inv.y, inv.w-4, inv.h);
+    ctx.clearRect(inv.x+6, inv.y+4, 4, 4);
+    ctx.clearRect(inv.x+inv.w-10, inv.y+4, 4, 4);
+    if (inv.frame) {
+      ctx.fillRect(inv.x, inv.y+4, 2, 6);
+      ctx.fillRect(inv.x+inv.w-2, inv.y+4, 2, 6);
+    } else {
+      ctx.fillRect(inv.x-2, inv.y+6, 2, 4);
+      ctx.fillRect(inv.x+inv.w, inv.y+6, 2, 4);
+    }
+  }
+  ctx.shadowBlur = 0;
+}
+
+let lastTime = 0, invMoveTimer = 0, frameToggle = 0;
+const INV_MOVE_INTERVAL = 600; // ms
+
+function gameLoop(ts) {
+  if (!state.running) return;
+  const dt = ts - lastTime;
+  lastTime = ts;
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Move player
+  if (keys.left) player.x = Math.max(player.w/2, player.x - player.speed);
+  if (keys.right) player.x = Math.min(W - player.w/2, player.x + player.speed);
+
+  // Fire
+  fireCooldown = Math.max(0, fireCooldown - dt);
+  const cooldownTime = powerup.type === 'rapid' ? 100 : 300;
+  if (keys.fire && fireCooldown === 0) {
+    if (powerup.type === 'triple') {
+      bullets.push({ x: player.x, y: player.y - player.h/2, w: 3, h: 10, speed: 8 });
+      bullets.push({ x: player.x - 10, y: player.y - player.h/2 + 4, w: 3, h: 10, speed: 8, vx: -1.5 });
+      bullets.push({ x: player.x + 10, y: player.y - player.h/2 + 4, w: 3, h: 10, speed: 8, vx: 1.5 });
+    } else {
+      bullets.push({ x: player.x, y: player.y - player.h/2, w: 3, h: 10, speed: 8 });
+    }
+    fireCooldown = cooldownTime;
+    SFX.shoot();
+  }
+
+  // Powerup timer
+  if (powerup.type) {
+    powerup.timer -= dt;
+    if (powerup.timer <= 0) powerup = { type: null, timer: 0 };
+  }
+
+  // Bonus UFO spawn
+  bonusUFOTimer += dt;
+  if (!bonusUFO && bonusUFOTimer >= BONUS_UFO_INTERVAL) {
+    bonusUFOTimer = 0;
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    bonusUFO = {
+      x: dir === 1 ? -40 : W + 40,
+      y: 14,
+      w: 36, h: 14,
+      dir,
+      speed: 2.2,
+      type: POWERUPS[Math.floor(Math.random() * POWERUPS.length)],
+      flash: 0
+    };
+    SFX.bonusUFO();
+  }
+  if (bonusUFO) {
+    bonusUFO.x += bonusUFO.speed * bonusUFO.dir;
+    bonusUFO.flash += dt;
+    if (bonusUFO.x > W + 60 || bonusUFO.x < -60) bonusUFO = null;
+  }
+
+  // Move bullets
+  bullets = bullets.filter(b => b.y > -b.h);
+  bullets.forEach(b => { b.y -= b.speed; if (b.vx) b.x += b.vx; });
+
+  invBullets = invBullets.filter(b => b.y < H);
+  invBullets.forEach(b => b.y += b.speed);
+
+  // Move invaders
+  invMoveTimer += dt;
+  const aliveInv = invaders.filter(i => i.alive);
+  const moveInterval = Math.max(80, INV_MOVE_INTERVAL - state.level * 40 - (invaders.length - aliveInv.length) * 6);
+
+  if (invMoveTimer >= moveInterval) {
+    invMoveTimer = 0;
+    frameToggle ^= 1;
+
+    // Check edge
+    let hitEdge = false;
+    for (const inv of aliveInv) {
+      if (inv.x + inv.w + invDir * 10 > W - 4 || inv.x + invDir * 10 < 4) {
+        hitEdge = true; break;
+      }
+    }
+    if (hitEdge) {
+      invDir *= -1;
+      invaders.forEach(inv => { if (inv.alive) inv.y += 12; });
+    } else {
+      invaders.forEach(inv => { if (inv.alive) { inv.x += invDir * 10; inv.frame = frameToggle; } });
+    }
+    SFX.march();
+
+    // Check invasion
+    for (const inv of aliveInv) {
+      if (inv.y + inv.h >= H - 50) { endGame(false); return; }
+    }
+  }
+
+  // Invader shoot
+  invShootTimer += dt;
+  const shootInterval = Math.max(400, 1800 - state.level * 120);
+  if (invShootTimer >= shootInterval && aliveInv.length > 0) {
+    invShootTimer = 0;
+    const shooter = aliveInv[Math.floor(Math.random() * aliveInv.length)];
+    invBullets.push({ x: shooter.x + shooter.w/2, y: shooter.y + shooter.h, w: 3, h: 10, speed: 3 + state.level * 0.3 });
+  }
+
+  // Collision: player bullets vs bonus UFO
+  if (bonusUFO) {
+    for (let bi = bullets.length - 1; bi >= 0; bi--) {
+      const b = bullets[bi];
+      if (b.x < bonusUFO.x + bonusUFO.w/2 && b.x + b.w > bonusUFO.x - bonusUFO.w/2 &&
+          b.y < bonusUFO.y + bonusUFO.h && b.y + b.h > bonusUFO.y) {
+        const type = bonusUFO.type;
+        spawnParticles(bonusUFO.x, bonusUFO.y, POWERUP_COLORS[type], 16);
+        powerup = { type, timer: POWERUP_DURATION };
+        state.score += 200;
+        scoreEl.textContent = state.score;
+        bonusUFO = null;
+        bullets.splice(bi, 1);
+        SFX.powerupGet();
+        break;
+      }
+    }
+  }
+
+  // Collision: player bullets vs invaders
+  for (let bi = bullets.length - 1; bi >= 0; bi--) {
+    const b = bullets[bi];
+    for (const inv of invaders) {
+      if (!inv.alive) continue;
+      if (b.x < inv.x + inv.w && b.x + b.w > inv.x && b.y < inv.y + inv.h && b.y + b.h > inv.y) {
+        inv.alive = false;
+        bullets.splice(bi, 1);
+        const pts = (3 - Math.floor(inv.row/2)) * 10;
+        state.score += pts;
+        scoreEl.textContent = state.score;
+        spawnParticles(inv.x + inv.w/2, inv.y + inv.h/2, COL.invaders[Math.floor(inv.row/2)]);
+        SFX.invaderHit();
+        break;
+      }
+    }
+  }
+
+  // Collision: player bullets vs shields
+  for (let bi = bullets.length - 1; bi >= 0; bi--) {
+    const b = bullets[bi];
+    for (const s of shields) {
+      if (s.hp <= 0) continue;
+      if (b.x < s.x + s.w && b.x + b.w > s.x && b.y < s.y + s.h && b.y + b.h > s.y) {
+        s.hp--;
+        bullets.splice(bi, 1);
+        break;
+      }
+    }
+  }
+
+  // Collision: inv bullets vs shields
+  for (let bi = invBullets.length - 1; bi >= 0; bi--) {
+    const b = invBullets[bi];
+    for (const s of shields) {
+      if (s.hp <= 0) continue;
+      if (b.x < s.x + s.w && b.x + b.w > s.x && b.y < s.y + s.h && b.y + b.h > s.y) {
+        s.hp--;
+        invBullets.splice(bi, 1);
+        break;
+      }
+    }
+  }
+
+  // Collision: inv bullets vs player
+  for (let bi = invBullets.length - 1; bi >= 0; bi--) {
+    const b = invBullets[bi];
+    const p = player;
+    if (b.x < p.x + p.w/2 && b.x + b.w > p.x - p.w/2 && b.y < p.y + p.h/2 && b.y + b.h > p.y - p.h/2) {
+      invBullets.splice(bi, 1);
+      if (powerup.type === 'invincible') {
+        spawnParticles(p.x, p.y, '#0ff', 6); // just a small spark
+        continue;
+      }
+      state.lives--;
+      livesEl.textContent = state.lives;
+      spawnParticles(p.x, p.y, '#0ff', 16);
+      SFX.playerHit();
+      if (state.lives <= 0) { endGame(false); return; }
+    }
+  }
+
+  // Next level
+  if (aliveInv.length === 0) {
+    state.level++;
+    levelEl.textContent = state.level;
+    SFX.levelUp();
+    initGame();
+  }
+
+  // Draw bonus UFO
+  if (bonusUFO) {
+    const col = POWERUP_COLORS[bonusUFO.type];
+    const flicker = Math.sin(bonusUFO.flash / 80) > 0;
+    ctx.fillStyle = flicker ? col : col + '99';
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 12;
+    const bx = bonusUFO.x - bonusUFO.w/2, by = bonusUFO.y;
+    const bw = bonusUFO.w, bh = bonusUFO.h;
+    // UFO saucer shape
+    ctx.fillRect(bx+6, by, bw-12, bh/2);
+    ctx.fillRect(bx, by+bh/2, bw, bh/2);
+    ctx.fillRect(bx+2, by-4, 4, 4);
+    ctx.fillRect(bx+bw-6, by-4, 4, 4);
+    ctx.fillRect(bx+bw/2-2, by-6, 4, 6);
+    // label
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = col;
+    ctx.font = '6px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(POWERUP_LABELS[bonusUFO.type], bonusUFO.x, by - 8);
+    ctx.shadowBlur = 0;
+  }
+
+  // Draw powerup bar
+  if (powerup.type) {
+    const col = POWERUP_COLORS[powerup.type];
+    const ratio = powerup.timer / POWERUP_DURATION;
+    const barW = (W - 20) * ratio;
+    ctx.fillStyle = col + '44';
+    ctx.fillRect(10, H - 14, W - 20, 4);
+    ctx.fillStyle = col;
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 6;
+    ctx.fillRect(10, H - 14, barW, 4);
+    ctx.shadowBlur = 0;
+    ctx.font = '7px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = col;
+    ctx.fillText(POWERUP_LABELS[powerup.type], 10, H - 17);
+  }
+
+  // Draw shields
+  shields.forEach(s => {
+    if (s.hp <= 0) return;
+    const alpha = s.hp / 6;
+    ctx.fillStyle = `rgba(0,180,0,${alpha})`;
+    ctx.shadowColor = COL.shield;
+    ctx.shadowBlur = 4;
+    ctx.fillRect(s.x, s.y, s.w, s.h);
+    ctx.shadowBlur = 0;
+  });
+
+  // Draw invaders
+  invaders.forEach(inv => { if (inv.alive) drawInvader(inv); });
+
+  // Draw bullets
+  bullets.forEach(b => {
+    ctx.fillStyle = COL.bullet;
+    ctx.shadowColor = COL.bullet;
+    ctx.shadowBlur = 6;
+    ctx.fillRect(b.x - b.w/2, b.y, b.w, b.h);
+    ctx.shadowBlur = 0;
+  });
+
+  invBullets.forEach(b => {
+    ctx.fillStyle = COL.invBullet;
+    ctx.shadowColor = COL.invBullet;
+    ctx.shadowBlur = 6;
+    ctx.fillRect(b.x - b.w/2, b.y, b.w, b.h);
+    ctx.shadowBlur = 0;
+  });
+
+  // Draw particles
+  particles = particles.filter(p => p.life > 0);
+  particles.forEach(p => {
+    p.x += p.vx; p.y += p.vy; p.vy += 0.1; p.life -= 0.04;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2, 0, Math.PI*2);
+    ctx.fillStyle = p.col + Math.floor(p.life * 255).toString(16).padStart(2,'0');
+    ctx.fill();
+  });
+
+  // Draw player
+  if (powerup.type === 'invincible') {
+    const pulse = (Math.sin(Date.now() / 100) + 1) / 2;
+    ctx.shadowColor = '#0ff';
+    ctx.shadowBlur = 8 + pulse * 20;
+  }
+  drawPlayer();
+  ctx.shadowBlur = 0;
+
+  // Ground line
+  ctx.strokeStyle = '#0ff4';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, H - 18);
+  ctx.lineTo(W, H - 18);
+  ctx.stroke();
+
+  animId = requestAnimationFrame(gameLoop);
+}
+
+function startGame() {
+  ensureAudio();
+  state = { score: 0, level: 1, lives: 3, running: true };
+  scoreEl.textContent = 0; levelEl.textContent = 1; livesEl.textContent = 3;
+  overlay.style.display = 'none';
+  initGame();
+  lastTime = performance.now();
+  animId = requestAnimationFrame(gameLoop);
+}
+
+function endGame(win) {
+  state.running = false;
+  cancelAnimationFrame(animId);
+  if (!win) SFX.gameOver();
+  else SFX.levelUp();
+  overlay.innerHTML = `
+    <h1>${win ? 'YOU WIN!' : 'GAME OVER'}</h1>
+    <p>SCORE: ${state.score}</p>
+    <button class="start-btn" id="startBtn">> RETRY <</button>
+  `;
+  overlay.style.display = 'flex';
+  document.getElementById('startBtn').addEventListener('click', startGame);
+}
+
+// Controls
+document.getElementById('startBtn').addEventListener('click', startGame);
+
+// Touch controls
+function holdBtn(btn, key) {
+  btn.addEventListener('touchstart', e => { e.preventDefault(); keys[key] = true; });
+  btn.addEventListener('touchend', e => { e.preventDefault(); keys[key] = false; });
+  btn.addEventListener('mousedown', () => keys[key] = true);
+  btn.addEventListener('mouseup', () => keys[key] = false);
+}
+holdBtn(document.getElementById('btnL'), 'left');
+holdBtn(document.getElementById('btnR'), 'right');
+holdBtn(document.getElementById('btnFire'), 'fire');
+
+// Keyboard
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft') keys.left = true;
+  if (e.key === 'ArrowRight') keys.right = true;
+  if (e.key === ' ' || e.key === 'z') keys.fire = true;
+});
+document.addEventListener('keyup', e => {
+  if (e.key === 'ArrowLeft') keys.left = false;
+  if (e.key === 'ArrowRight') keys.right = false;
+  if (e.key === ' ' || e.key === 'z') keys.fire = false;
+});
+
+// Swipe support
+let touchStartX = null;
+canvas.addEventListener('touchstart', e => { touchStartX = e.touches[0].clientX; });
+canvas.addEventListener('touchmove', e => {
+  if (touchStartX === null) return;
+  const dx = e.touches[0].clientX - touchStartX;
+  keys.left = dx < -10;
+  keys.right = dx > 10;
+});
+canvas.addEventListener('touchend', () => { keys.left = false; keys.right = false; touchStartX = null; });
+</script>
+</body>
+</html>
